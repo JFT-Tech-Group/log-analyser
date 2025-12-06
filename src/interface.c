@@ -365,43 +365,235 @@ void filtrer_par_service(WINDOW *win ,char *buffer , int bufsize)
 
     wrefresh(win);
 }
+// Affichage avec retour à la ligne dans une fenêtre ncurses
 
-void afficher_menu_date_left(WINDOW *win, char *date_debut, char *date_fin, int size)
+void wrap_print_safe(WINDOW *win, int *y, int x, const char *txt)
 {
-    setlocale(LC_ALL, ""); 
-    werase(win);
-    box(win, 0, 0);
-
-    int y = 1;
-    int x = 2;
-
-    mvwprintw(win, y++, x, "Filtrer par date");
-    mvwprintw(win, y++, x, "--------------------");
-    mvwprintw(win, y++, x, "Format accepte : AAAA-MM-JJ");
-    mvwprintw(win, y++, x, "(Ex : 2025-11-10)");
-    y++;
-
-    // Saisie date début
-    mvwprintw(win, y++, x, "Date de debut :");
-
     int h, w;
     getmaxyx(win, h, w);
-    (void)h;
-    (void)w;
-    echo();
-    curs_set(1);
 
-    mvwgetnstr(win, y - 1, x + 17, date_debut, size - 1);
-    y += 1;
+    int max = w - x - 1;   // largeur disponible
+    int len = strlen(txt);
 
-    // Saisie date fin
-    mvwprintw(win, y++, x, "Date de fin   :");
-    mvwgetnstr(win, y - 1, x + 17, date_fin, size - 1);
+    for (int i = 0; i < len; i += max)
+    {
+        char buffer[512] = {0};
+        snprintf(buffer, sizeof(buffer), "%.*s", max, txt + i);
+        mvwprintw(win, *y, x, "%s", buffer);
+        (*y)++;
 
-    noecho();
-    curs_set(0);
+        if (*y >= h - 1) break; // éviter dépassement vertical
+    }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////// FONCTION D'AFFICHAGE DES FILTRES DATE //////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------
+// Vérifie si la date respecte STRICTEMENT : YYYY-MM-DD HH:MM:SS
+// -------------------------------------------------------------
+int date_format_ok(const char *buffer)
+{
+    const char *pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$";
+    regex_t regex;
+
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0)
+    {
+        return 0;
+    }
+    int reti = regexec(&regex, buffer, 0, NULL, 0);
+    regfree(&regex);
+
+    return (reti == 0);  // 0 = OK
+}
+
+// -------------------------------------------------------------
+// Vérifie si la date est correcte selon strptime et champs
+// -------------------------------------------------------------
+int date_valide(const char *buffer)
+{
+    struct tm tm = {0};
+    char *ret = strptime(buffer, "%Y-%m-%d %H:%M:%S", &tm);
+
+    if (!ret || *ret != '\0')
+    {
+        return 0;
+    }
+    if (tm.tm_mon < 0 || tm.tm_mon > 11) return 0;
+    if (tm.tm_mday < 1 || tm.tm_mday > 31) return 0;
+    if (tm.tm_hour < 0 || tm.tm_hour > 23) return 0;
+    if (tm.tm_min < 0 || tm.tm_min > 59) return 0;
+    if (tm.tm_sec < 0 || tm.tm_sec > 59) return 0;
+
+    return 1;
+}
+
+// -------------------------------------------------------------
+// Combine format + validation logique
+// -------------------------------------------------------------
+int date_est_valide(const char *buffer)
+{
+    if (!date_format_ok(buffer))
+        return 0;
+
+    if (!date_valide(buffer))
+        return 0;
+
+    return 1;
+}
+
+// -------------------------------------------------------------
+// Conversion en microsecondes
+// -------------------------------------------------------------
+uint64_t convert_date_to_usec(const char *buffer)
+{
+    struct tm tm = {0};
+    strptime(buffer, "%Y-%m-%d %H:%M:%S", &tm);
+    time_t epoch = mktime(&tm);
+    return (uint64_t)epoch * 1000000ULL;
+}
+
+// -------------------------------------------------------------
+// Message d'erreur commun
+// -------------------------------------------------------------
+void gestion_d_erreur_date(WINDOW *win)
+{
+    int h, w;
+    getmaxyx(win, h, w);
+
+    attron(COLOR_PAIR(4));
+    mvwprintw(win, h - 3, 2,"Erreur : date invalide ! Format requis : YYYY-MM-DD HH:MM:SS");
+    attroff(COLOR_PAIR(4));
 
     wrefresh(win);
+    wgetch(win);
+}
+int input_avec_escape(WINDOW *win, int y, int x, char *buffer, int max)
+{
+    int pos = 0;
+    int ch;
+
+    keypad(win, TRUE);   // important !
+    noecho();
+    curs_set(1);
+
+    while (1)
+    {
+        ch = wgetch(win);
+
+        // --- ESC ---
+        if (ch == 27)
+        {
+            buffer[0] = '\0';
+            return -1;
+        }
+
+        // --- ENTREE ---
+        if (ch == '\n' || ch == KEY_ENTER)
+        {
+            buffer[pos] = '\0';
+            return 0;
+        }
+
+        // --- BACKSPACE ---
+        if ((ch == KEY_BACKSPACE || ch == 127 || ch == 8) && pos > 0)
+        {
+            pos--;
+            buffer[pos] = '\0';
+            mvwprintw(win, y, x + pos, " ");
+            wmove(win, y, x + pos);
+            wrefresh(win);
+            continue;
+        }
+
+        // --- TEXTE NORMAL ---
+        if (ch >= 32 && ch <= 126 && pos < max - 1)
+        {
+            buffer[pos++] = ch;
+            mvwprintw(win, y, x + pos - 1, "%c", ch);
+            wrefresh(win);
+        }
+    }
+}
+
+
+// -------------------------------------------------------------
+// Menu ncurses
+// -------------------------------------------------------------
+void afficher_menu_date_left(WINDOW *win, char *date_debut, char *date_fin, int size)
+{
+    setlocale(LC_ALL, "");
+
+    int valide = 0;
+
+    while (!valide)
+    {
+        werase(win);
+        box(win, 0, 0);
+
+        int y = 1, x = 2;
+
+        wrap_print_safe(win, &y, x, "Filtrer par date");
+        wrap_print_safe(win, &y, x, "--------------------");
+        wrap_print_safe(win, &y, x, "Format accepte : AAAA-MM-JJ HH:MM:SS");
+        wrap_print_safe(win, &y, x, "(Ex : 2025-11-10 14:30:00)");
+        y++;
+
+        // ---- Saisie date début ----
+        mvwprintw(win, y++, x, "Date de debut :");
+
+        echo();
+        curs_set(1);
+        if (input_avec_escape(win, y - 1, x + 17, date_debut, size) == -1)
+        {
+            return; // utilisateur a appuyé sur ESC
+        }
+
+        y++;
+
+        // ---- Saisie date fin ----
+        mvwprintw(win, y++, x, "Date de fin   :");
+        if (input_avec_escape(win, y - 1, x + 17, date_debut, size) == -1)
+        {
+            return; // utilisateur a appuyé sur ESC
+        }
+
+
+        noecho();
+        curs_set(0);
+
+        // ------------------------------
+        // VALIDATION DES DEUX DATES
+        // ------------------------------
+        if (!date_est_valide(date_debut) || !date_est_valide(date_fin))
+        {
+            gestion_d_erreur_date(win);
+            continue;
+        }
+
+        uint64_t t1 = convert_date_to_usec(date_debut);
+        uint64_t t2 = convert_date_to_usec(date_fin);
+
+        if (t1 > t2)
+        {
+            attron(COLOR_PAIR(4));
+            mvwprintw(win, y + 1, x,"Erreur : La date de fin doit être >= date de debut.");
+            attroff(COLOR_PAIR(4));
+            wrefresh(win);
+            wgetch(win);
+            continue;
+        }
+
+        valide = 1; // dates correctes
+    }
+
+    // Message de confirmation
+    werase(win);
+    box(win, 0, 0);
+    mvwprintw(win, 2, 2, "Dates enregistrees avec succes !");
+    wrefresh(win);
+    wgetch(win);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
