@@ -809,34 +809,33 @@ void afficher_sous_menus(WINDOW *left, int cur_opt)
     }
 }
 
-// Afficher les détails complets d'une entrée dans une nouvelle fenêtre
 void affiche_entry_details(sd_journal *journal, int entry_num)
 {
     int h, w;
     getmaxyx(stdscr, h, w);
 
-    // Fenêtre contenant le cadre
+    // Fenêtre principale avec box
     WINDOW *win = newwin(h - 4, w - 3, 1, 1);
     box(win, 0, 0);
     mvwprintw(win, 0, 2, " Entrée %d ", entry_num);
     wrefresh(win);
 
-    // PAD pour le contenu (taille généreuse)
-    int pad_height = 2000;   // assez grand pour la plupart des entrées
-    int pad_width  = w - 4;
+    // PAD pour le contenu
+    int pad_height = 2000;
+    int pad_width  = w - 6;  // -6 pour ne pas toucher la bordure
     WINDOW *pad = newpad(pad_height, pad_width);
 
     // Footer
-    creer_fenetre_footer( "Utilisez les flèches ↑/↓ pour défiler, 'q' pour quitter." );
+    creer_fenetre_footer("Utilisez ↑/↓pour défiler, 'q' pour quitter.");
 
-    // Réinitialiser l’itérateur pour l’entrée courante
+    // Réinitialiser l’itérateur
     sd_journal_restart_data(journal);
 
     const void *data;
     size_t data_size;
     int y = 0;
 
-    // Énumérer les champs réels avec wrapping
+    // Énumérer les champs avec wrapping
     while (sd_journal_enumerate_available_data(journal, &data, &data_size) > 0)
     {
         const char *ptr = (const char *)data;
@@ -844,26 +843,28 @@ void affiche_entry_details(sd_journal *journal, int entry_num)
 
         while (remaining > 0 && y < pad_height - 1)
         {
-            int chunk = pad_width - 2;
-            if (chunk > remaining)
+            int chunk = pad_width;
+            if (chunk > remaining) 
+            {
                 chunk = remaining;
-
+            }
             mvwprintw(pad, y++, 0, "%.*s", chunk, ptr);
 
             ptr += chunk;
             remaining -= chunk;
         }
+
+        // Ligne vide entre les champs
+        if (y < pad_height - 1) y++;
     }
 
-
-    // SCROLLING
     int pos = 0;               // première ligne visible
-    int visible_h = h - 4;     // hauteur visible interne
+    int visible_h = h - 6;     // hauteur visible interne (box + marge)
     int ch;
 
-    prefresh(pad, pos, 0, 2, 2, h - 5, w - 3);
-
-    keypad(win, TRUE);
+    keypad(stdscr, TRUE);  // pour lire les flèches sur stdscr
+    curs_set(0);
+    prefresh(pad, pos, 0, 2, 2, h - 5, w - 4);
 
     while ((ch = getch()) != 'q')
     {
@@ -887,18 +888,18 @@ void affiche_entry_details(sd_journal *journal, int entry_num)
 
         if (pos < 0) pos = 0;
         if (pos > y - visible_h) pos = y - visible_h;
-        if (pos < 0) pos = 0;
 
-        prefresh(pad, pos, 0, 2, 2, h - 5, w - 3);
+        // Afficher le pad dans la zone visible (avec marge)
+        
     }
 
     delwin(pad);
     delwin(win);
 
-    // Nettoyer l'écran principal
     werase(stdscr);
     wrefresh(stdscr);
 }
+
 
 // Affichage du sous-menu
 void sub_menu(WINDOW *left, WINDOW *right, sd_journal *journal)
