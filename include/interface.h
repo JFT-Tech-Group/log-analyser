@@ -5,9 +5,13 @@
 #include <locale.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
+#include <regex.h>
 
 #define MAX_CATS 7
 #define MAX_OPTS 6
+#define COLOR_HIGHLIGHT 7
+#define LINES_width  (w - 3)
 
 typedef struct FiltresActifs
 {
